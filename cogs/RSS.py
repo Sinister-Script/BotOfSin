@@ -2,19 +2,188 @@
 import discord
 import asyncio
 import sqlite3
+import requests
 from discord.ext import commands
 from discord import app_commands
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as dateparser
 
-# Token
+# Token / Config
+DB_PATH = "feeds.db"
 from BotOfSin import GUILD_ID, CHANNEL_ID
-from .FeedUtils import parse_feed, filter_recent, make_paginated_view, clean_summary, clean_ctbb_summary
+from .FeedUtils import parse_feed, filter_recent, make_paginated_view, clean_summary
 
-# Feeds
-PORTSWIGGER_FEED = "https://portswigger.net/research/rss"
-CYBERWIRE_FEED = "https://feeds.megaphone.fm/cyberwire-daily-podcast"
-CTBB_FEED = "https://media.rss.com/ctbbpodcast/feed.xml"
+# ------------------ Feed Registry ------------------
+# Fields:
+#   name          - display name
+#   url           - RSS feed URL
+#   color         - embed color
+#   category      - logical grouping for slash commands (news, gov, research, podcast)
+#   include_audio - True only for podcast feeds with enclosures
+#   days_recent   - how far back /news and /feedsearch show results
+
+FEED_REGISTRY = [
+    # ---- Private Sector ----
+    {"name": "Graham Cluley",               "url": "https://grahamcluley.com/feed/",                                 "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Threatpost",                  "url": "https://threatpost.com/feed/",                                   "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Krebs on Security",           "url": "https://krebsonsecurity.com/feed/",                              "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Dark Reading",                "url": "https://www.darkreading.com/rss.xml",                            "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "We Live Security",            "url": "http://feeds.feedburner.com/eset/blog",                          "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Bleeping Computer",           "url": "https://www.bleepingcomputer.com/feed/",                         "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "The Hacker News",             "url": "http://feeds.feedburner.com/TheHackersNews?format=xml",          "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Schneier on Security",        "url": "https://www.schneier.com/feed/atom/",                            "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Securelist",                  "url": "https://securelist.com/feed/",                                   "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Checkpoint Research",         "url": "https://research.checkpoint.com/feed/",                          "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Microsoft Security",          "url": "https://msrc-blog.microsoft.com/feed/",                          "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Recorded Future",             "url": "https://www.recordedfuture.com/feed",                            "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "SentinelOne",                 "url": "https://www.sentinelone.com/feed/",                              "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Red Canary",                  "url": "https://redcanary.com/feed/",                                    "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "AT&T Cybersecurity",          "url": "https://cybersecurity.att.com/site/blog-all-rss",                "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Binary Defense",              "url": "https://www.binarydefense.com/feed/",                            "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Infosecurity Magazine",       "url": "https://www.infosecurity-magazine.com/rss/news/",                "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Google Security",             "url": "http://feeds.feedburner.com/GoogleOnlineSecurityBlog",           "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Trend Micro",                 "url": "http://feeds.trendmicro.com/TrendMicroResearch",                 "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Proof Point",                 "url": "https://www.proofpoint.com/us/rss.xml",                          "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "Cisco Security",              "url": "https://blogs.cisco.com/security/feed",                          "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "VirusBulletin",               "url": "https://www.virusbulletin.com/rss",                              "color": discord.Color.magenta(),      "category": "news",     "include_audio": False, "days_recent": 7},
+    {"name": "James Forshaw",               "url": "https://www.tiraniddo.dev/feeds/posts/default",                  "color": discord.Color.teal(),         "category": "research", "include_audio": False, "days_recent": 30},
+    {"name": "Adam Chester",                "url": "https://blog.xpnsec.com/rss.xml",                                "color": discord.Color.teal(),         "category": "research", "include_audio": False, "days_recent": 30},
+    {"name": "Modexp",                      "url": "https://modexp.wordpress.com/feed/",                             "color": discord.Color.teal(),         "category": "research", "include_audio": False, "days_recent": 30},
+    {"name": "DaVinci Forensics",           "url": "https://davinciforensics.co.za/cybersecurity/feed/",             "color": discord.Color.teal(),         "category": "research", "include_audio": False, "days_recent": 30},
+    {"name": "PortSwigger Research",        "url": "https://portswigger.net/research/rss",                           "color": discord.Color.teal(),         "category": "research", "include_audio": False, "days_recent": 60},
+    
+    # ---- Government / CERT ----
+    {"name": "US-CERT CISA",                "url": "https://www.cisa.gov/uscert/ncas/alerts.xml",                    "color": discord.Color.red(),          "category": "gov",      "include_audio": False, "days_recent": 14},
+    {"name": "NCSC",                        "url": "https://www.ncsc.gov.uk/api/1/services/v1/report-rss-feed.xml",  "color": discord.Color.red(),          "category": "gov",      "include_audio": False, "days_recent": 14},
+    {"name": "Center of Internet Security", "url": "https://www.cisecurity.org/feed/advisories",                     "color": discord.Color.red(),          "category": "gov",      "include_audio": False, "days_recent": 14},
+
+    # ---- CVE / Vulnerability ----
+    {"name": "CISA KEV",                    "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "color": discord.Color.orange(), "category": "cve", "include_audio": False, "days_recent": 7},
+    {"name": "NVD Recent CVEs",             "url": "https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss-analyzed.xml",  "color": discord.Color.orange(),       "category": "cve",      "include_audio": False, "days_recent": 7},
+    
+    # ---- Podcast ----
+    {"name": "CyberWire Daily",             "url": "https://feeds.megaphone.fm/cyberwire-daily-podcast",             "color": discord.Color.brand_red(),    "category": "podcast",  "include_audio": True,  "days_recent": 7},
+    {"name": "CTBB Podcast",                "url": "https://media.rss.com/ctbbpodcast/feed.xml",                     "color": discord.Color.brand_red(),    "category": "podcast",  "include_audio": True,  "days_recent": 30},
+]
+
+# Ransomware JSON source, not RSS - Useful for later
+RANSOMWARE_SOURCE = "https://raw.githubusercontent.com/joshhighet/ransomwatch/main/posts.json"
+
+# Build a quick lookup by name for commands
+FEED_BY_NAME = {f["name"].lower(): f for f in FEED_REGISTRY}
+CATEGORIES = list({f["category"] for f in FEED_REGISTRY})
+# ------------------ Feed Registry End ------------------
+
+# ------------------ Feed DB Setup ------------------
+def db_connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entries (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            feed_name TEXT NOT NULL,
+            guid      TEXT UNIQUE NOT NULL,
+            title     TEXT,
+            link      TEXT,
+            summary   TEXT,
+            published TEXT,
+            audio     TEXT,
+            posted    INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    return conn
+
+def already_seen(cur, guid: str) -> bool:
+    '''
+    Checks whether an entry with the given GUID already exists in the DB
+
+    Args:
+        cur (sqlite3.Cursor): Active database cursor to query against
+        guid (str): Unique identifier for the feed entry (entry id, url, or title fallback)
+
+    Returns:
+        bool: True if the entry already exists in the DB, False if new
+    '''
+    
+    cur.execute("SELECT 1 FROM entries WHERE guid = ?", (guid,))
+    return cur.fetchone() is not None
+
+def insert_entry(cur, feed_name: str, e: dict, guid: str):
+    '''
+    Inserts a new feed entry into the DB
+
+    Args:
+        cur (sqlite3.Cursor): Active database cursor to insert with
+        feed_name (str): Display name of the source feed (from FEED_REGISTRY)
+        e (dict): Parsed feed entry containing title, link, summary, published, and audio fields
+        guid (str): Unique identifier for the entry used to prevent duplicates
+    '''
+    
+    published_val = e["published"].isoformat() if e.get("published") else None
+    cur.execute(
+        """INSERT OR IGNORE INTO entries
+           (feed_name, guid, title, link, summary, published, audio, posted)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+        (feed_name, guid, e.get("title"), e.get("link"),
+         e.get("summary"), published_val, e.get("audio")),
+    )
+
+def purge_old_entries(cur, days: int = 90):
+    '''
+    Removes entries older than the given number of days from the DB.
+    Called at the end of each check_all_feeds cycle to keep the DB from growing indefinitely
+
+    Args:
+        cur (sqlite3.Cursor): Active database cursor to delete with
+        days (int): Time until entries are removed, anything older is deleted (default: 90)
+    '''
+    
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cur.execute("SELECT guid, published FROM entries WHERE published IS NOT NULL")
+    for guid, published_str in cur.fetchall():
+        try:
+            if dateparser.parse(published_str).astimezone(timezone.utc) < cutoff:
+                cur.execute("DELETE FROM entries WHERE guid = ?", (guid,))
+        except Exception:
+            continue
+# ------------------ Feed DB Setup End ------------------
+
+# ------------------ JSON Parser Start ------------------
+# Currently only for ransomware source
+def fetch_ransomware_entries():
+    '''
+    Parse JSON feeds into the same format as RSS feeds
+    so that looks identical
+    
+    Returns:
+        list[dict]: Parsed entries with title, link, summary, published, audio, and raw fields.
+                    Returns an empty list if the fetch or parse fails.
+    '''
+    
+    try:
+        posts = requests.get(RANSOMWARE_SOURCE, timeout=15).json()
+    except Exception as e:
+        print(f"[ransomware] fetch failed: {e}")
+        return []
+
+    results = []
+    for post in posts:
+        published = None
+        try:
+            published = dateparser.parse(post.get("discovered", "")).astimezone(timezone.utc)
+        except Exception:
+            pass
+
+        results.append({
+            "title":     f"[{post.get('group_name', 'Unknown')}] {post.get('post_title', 'New Post')}",
+            "link":      post.get("url", ""),
+            "summary":   post.get("post_title", ""),
+            "published": published,
+            "audio":     None,
+            "raw":       post,
+        })
+    return results
+# ------------------ JSON Parser End ------------------
 
 class NewsCommands(commands.Cog):
     def __init__(self, bot):
@@ -27,259 +196,271 @@ class NewsCommands(commands.Cog):
     async def cog_unload(self):
         if self._bg_task:
             self._bg_task.cancel()
-     
-    # ------------------ Feed DB Setup ------------------
+
+    # ------------------ Background Loop Start ------------------
     async def feed_loop(self):
+        '''
+        Indefinitely loops through all feeds once per hour in the background
+        '''
+        
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
-                await self.check_feeds()
+                await self.check_all_feeds()
             except Exception as e:
                 print(f"[feed_loop] unexpected error: {e}")
-            await asyncio.sleep(60 * 60)
+            await asyncio.sleep(60 * 60)  # run every hour
 
-    async def check_feeds(self):
+    async def check_all_feeds(self):
+        '''
+        Opens a DB connection and processes every feed source in one pass:
+        iterates all RSS feeds in FEED_REGISTRY, then the ransomware JSON feed,
+        then purges entries older than 90 days
         
-        # Error Handling
+        The connection is always closed
+        in the finally block regardless of any errors that occur
+        '''
+        
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = db_connect()
             cur = conn.cursor()
         except Exception as e:
-            print(f"[check_feeds] DB connect error: {e}")
+            print(f"[check_all_feeds] DB connect error: {e}")
             return
 
         try:
-            cur.execute("SELECT id, name, url FROM feeds")
-            feeds = cur.fetchall()
-        except Exception as e:
-            print(f"[check_feeds] DB fetch feeds error: {e}")
-            conn.close()
-            return
-        
-        # Beginning of feed checking
-        for feed_id, name, url in feeds:
-            try:
-                entries = parse_feed(url, include_audio=True)
-            except Exception as e:
-                print(f"[check_feeds] parse_feed failed for {name} ({url}): {e}")
-                continue
+            # --- Standard RSS feeds from registry ---
+            for feed in FEED_REGISTRY:
+                await self._process_feed(cur, conn, feed)
 
-            for e in entries:
-                # Creating stable GUID and using entry raw id if present
-                guid = None
-                raw = e.get("raw")
-                try:
-                    if isinstance(raw, dict):
-                        guid = raw.get("id") or raw.get("guid") or e.get("link")
-                    else:
-                        guid = raw.get("id") if hasattr(raw, "get") else e.get("link")
-                except Exception:
-                    guid = e.get("link")
+            # --- Ransomware JSON feed ---
+            await self._process_ransomware(cur, conn)
 
-                # Avoiding duplicate entries
-                try:
-                    cur.execute("SELECT 1 FROM entries WHERE guid = ?", (guid,))
-                    if cur.fetchone():
-                        continue
-                except Exception as exc:
-                    print(f"[check_feeds] DB select error for guid {guid}: {exc}")
-                    continue
-
-                # Preparing published db
-                published_val = None
-                if e.get("published"):
-                    try:
-                        published_val = e["published"].isoformat()
-                    except Exception:
-                        published_val = None
-
-                # Adding new entry
-                try:
-                    cur.execute(
-                        """INSERT INTO entries
-                        (feed_id, guid, title, link, summary, published, audio, posted)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
-                        (
-                            feed_id,
-                            guid,
-                            e.get("title"),
-                            e.get("link"),
-                            e.get("summary"),
-                            published_val,
-                            e.get("audio"),
-                        ),
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    print(f"[check_feeds] DB insert failed for guid {guid}: {exc}")
-                    continue
-
-                chan_id = int(CHANNEL_ID) if not isinstance(CHANNEL_ID, int) else CHANNEL_ID
-                channel = self.bot.get_channel(chan_id)
-                if channel is None:
-                    try:
-                        channel = await self.bot.fetch_channel(chan_id)
-                    except Exception as exc:
-                        print(f"[check_feeds] couldn't fetch channel {chan_id}: {exc}")
-
-                if channel:
-                    try:
-                        await channel.send(f"**{name}** just released: {e.get('title')} {e.get('link')}")
-                        cur.execute("UPDATE entries SET posted = 1 WHERE guid = ?", (guid,))
-                        conn.commit()
-                    except Exception as exc:
-                        print(f"[check_feeds] failed sending or updating posted for guid {guid}: {exc}")
-
-        # Purge entries older than 90 days
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-            cur.execute("SELECT guid, published FROM entries WHERE published IS NOT NULL")
-            rows = cur.fetchall()
-            for guid, published_str in rows:
-                try:
-                    pub_dt = dateparser.parse(published_str).astimezone(timezone.utc)
-                    if pub_dt < cutoff:
-                        cur.execute("DELETE FROM entries WHERE guid = ?", (guid,))
-                except Exception:
-                    # Skip malformed dates
-                    continue
+            purge_old_entries(cur)
             conn.commit()
-        except Exception as exc:
-            print(f"[check_feeds] purge error: {exc}")
         finally:
             conn.close()
-    # ------------------ Feed DB Setup End ------------------
 
-    # ------------------ PortSwigger Commands ------------------
-    # /portarticles - shows all portswigger articles from a given a date
-    @app_commands.command(name="portarticles", description="List PortSwigger research articles from the past 60 days")
-    async def portarticles(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        articles = parse_feed(PORTSWIGGER_FEED)
-        recent = filter_recent(articles, 60)
-        if not recent:
-            await interaction.followup.send("No recent PortSwigger research articles.")
-            return
-        embed, view = make_paginated_view(recent, "PortSwigger Research - Past 60 Days", discord.Color.orange(), "Read")
-        await interaction.followup.send(embed=embed, view=view)
+    async def _get_channel(self, channel_id: int):
+        '''
+        Not in use currenyly - For constant updates to one channel
 
-    # /portsearch - searches all portswigger articles for a given term
-    @app_commands.command(name="portsearch", description="Search PortSwigger articles")
-    async def portsearch(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer()
-        articles = parse_feed(PORTSWIGGER_FEED)
-        matches = [a for a in articles if query.lower() in a["title"].lower() or query.lower() in (a["summary"] or "").lower()]
-        if not matches:
-            await interaction.followup.send(f"No PortSwigger articles found matching: {query}")
-            return
+        Args:
+            channel_id (int): Discord channel ID to look up
 
-        def build_embed(article):
-            summary = clean_summary(article["summary"])
-            ts = int(article["published"].timestamp()) if article["published"] else None
-            published_str = f"<t:{ts}:F> (<t:{ts}:R>)" if ts else "Unknown"
-            embed = discord.Embed(title=article["title"], url=article["link"], description=summary, color=discord.Color.orange())
-            embed.add_field(name="Published", value=published_str, inline=False)
-            embed.add_field(name="Article Link", value=article["link"], inline=False)
-            return embed
+        Returns:
+            discord.TextChannel | None: The resolved channel, or None if it cannot be found
+        '''
+        
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception as e:
+                print(f"[_get_channel] couldn't fetch {channel_id}: {e}")
+        return channel
 
-        if len(matches) > 1:
-            embeds = [build_embed(m) for m in matches]
-            embed, view = make_paginated_view(matches, "PortSwigger Search Results", discord.Color.orange(), "Read")
-            await interaction.followup.send(embed=embed, view=view)
-        else:
-            await interaction.followup.send(embed=build_embed(matches[0]))
-    # ------------------ PortSwigger Commands End ------------------
+    async def _process_feed(self, cur, conn, feed: dict):
+        '''
+        Processes a single feed from the registry and fetches all current entries, 
+        checks each against the DB to skip already-seen ones, and inserts new entries
+        
+        Auto posting new entries is not activated currently
 
-    # ------------------ CyberWire Podcast Commands ------------------
-    # /cyberepisodes - shows CyberWire Daily episodes from a given date
-    @app_commands.command(name="cyberepisodes", description="List CyberWire Daily podcast episodes from the past 30 days")
-    async def cyberepisodes(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        episodes = parse_feed(CYBERWIRE_FEED, include_audio=True)
-        recent = filter_recent(episodes, 7)
-        if not recent:
-            await interaction.followup.send("No recent CyberWire Daily episodes.")
-            return
-        embed, view = make_paginated_view(recent, "CyberWire Daily - Past 7 Days", discord.Color.blurple(), "Listen")
-        await interaction.followup.send(embed=embed, view=view)
-
-    # /cybersearch - searches all CyberWire Daily episodes for a given term
-    @app_commands.command(name="cybersearch", description="Search CyberWire Daily podcast episodes")
-    async def cybersearch(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer()
-        episodes = parse_feed(CYBERWIRE_FEED, include_audio=True)
-        matches = [e for e in episodes if query.lower() in e["title"].lower() or query.lower() in (e["summary"] or "").lower()]
-        if not matches:
-            await interaction.followup.send(f"No CyberWire Daily episodes found matching: {query}")
+        Args:
+            cur (sqlite3.Cursor): Active database cursor
+            conn (sqlite3.Connection): Active database connection for committing inserts
+            feed (dict): A single feed config entry from FEED_REGISTRY
+        '''
+        
+        # Processes each RSS feed same way 
+        name = feed["name"]
+        try:
+            entries = parse_feed(feed["url"], include_audio=feed["include_audio"])
+        except Exception as e:
+            print(f"[_process_feed] parse failed for {name}: {e}")
             return
 
-        def build_embed(ep):
-            summary = clean_summary(ep["summary"]) 
-            ts = int(ep["published"].timestamp()) if ep["published"] else None
-            published_str = f"<t:{ts}:F> (<t:{ts}:R>)" if ts else "Unknown"
-            embed = discord.Embed(
-                title=ep["title"],
-                url=ep["link"],
-                description=summary,
-                color=discord.Color.blurple()
-            )
-            embed.add_field(name="Published", value=published_str, inline=False)
-            audio_val = ep["audio"] if ep["audio"] else ep["link"]
-            embed.add_field(name="Listen / Link", value=audio_val, inline=False)
-            return embed
+        channel = await self._get_channel(CHANNEL_ID)
 
-        if len(matches) > 1:
-            embed, view = make_paginated_view(matches, "CyberWire Daily Search Results", discord.Color.blurple(), "Listen")
-            await interaction.followup.send(embed=embed, view=view)
-        else:
-            await interaction.followup.send(embed=build_embed(matches[0]))
-    # ------------------ CyberWire Podcast Commands End ------------------
+        for e in entries:
+            raw = e.get("raw")
+            guid = (raw.get("id") or raw.get("guid") or e.get("link")) if raw else e.get("link")
+            if not guid or already_seen(cur, guid):
+                continue
 
-    # ------------------ CTBB Podcast Commands ------------------
-    # /ctbepisodes - shows all ctbb episodes from a given a date
-    @app_commands.command(name="ctbepisodes", description="List CTBB podcast episodes from the past 30 days")
-    async def ctbepisodes(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        episodes = parse_feed(CTBB_FEED, include_audio=True, )
-        recent = filter_recent(episodes, 30)
-        if not recent:
-            await interaction.followup.send("No recent CTBB episodes.")
-            return
-        embed, view = make_paginated_view(recent, "CTBB Podcast - Past 30 Days", discord.Color.brand_red(), "Listen")
-        await interaction.followup.send(embed=embed, view=view)
+            insert_entry(cur, name, e, guid)
+            conn.commit()
 
-    # /ctbsearch - searches all ctbb episodes for a given term
-    @app_commands.command(name="ctbsearch", description="Search CTBB podcast episodes")
-    async def ctbsearch(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer()
-        episodes = parse_feed(CTBB_FEED, include_audio=True)
-        matches = [e for e in episodes if query.lower() in e["title"].lower() or query.lower() in (e["summary"] or "").lower()]
-        if not matches:
-            await interaction.followup.send(f"No CTBB episodes found matching: {query}")
-            return
+            '''
+            if channel:
+                try:
+                    embed = self._build_auto_embed(e, feed)
+                    await channel.send(embed=embed)
+                    cur.execute("UPDATE entries SET posted = 1 WHERE guid = ?", (guid,))
+                    conn.commit()
+                except Exception as exc:
+                    print(f"[_process_feed] send failed for {name} / {guid}: {exc}")
+            '''
+            
+    async def _process_ransomware(self, cur, conn):
+        '''
+        Handles the ransomwatch JSON feed just like the RSS feeds,
+        and runs the blocking HTTP fetch in a thread to avoid stalling the event loop,
+        then inserts any new entries into the DB
+        
+        Auto posting is being fixed currently
 
-        def build_embed(ep):
-            summary = clean_ctbb_summary(ep["summary"]) 
-            ts = int(ep["published"].timestamp()) if ep["published"] else None
-            published_str = f"<t:{ts}:F> (<t:{ts}:R>)" if ts else "Unknown"
-            embed = discord.Embed(
-                title=ep["title"],
-                url=ep["link"],
-                description=summary,
-                color=discord.Color.purple()
-            )
-            embed.add_field(name="Published", value=published_str, inline=False)
-            audio_val = ep["audio"] if ep["audio"] else ep["link"]
-            embed.add_field(name="Listen / Link", value=audio_val, inline=False)
-            return embed
+        Args:
+            cur (sqlite3.Cursor): Active database cursor
+            conn (sqlite3.Connection): Active database connection for committing inserts
+        '''
+        
+        entries = await asyncio.to_thread(fetch_ransomware_entries)
+        channel = await self._get_channel(CHANNEL_ID)
 
-        if len(matches) > 1:
-            embed, view = make_paginated_view(matches, "CTBB Search Results", discord.Color.brand_red(), "Listen")
-            await interaction.followup.send(embed=embed, view=view)
-        else:
-            await interaction.followup.send(embed=build_embed(matches[0]))
-    # ------------------ CTBB Podcast Commands End ------------------
+        for e in entries:
+            raw = e.get("raw", {})
+            guid = raw.get("post_url") or e.get("link") or e.get("title")
+            if not guid or already_seen(cur, guid):
+                continue
+
+            insert_entry(cur, "Ransomware Watch", e, guid)
+            conn.commit()
+
+            '''
+            if channel:
+                try:
+                    embed = discord.Embed(
+                        title=e["title"],
+                        url=e["link"] or None,
+                        color=discord.Color.dark_orange(),
+                    )
+                    if e.get("published"):
+                        ts = int(e["published"].timestamp())
+                        embed.add_field(name="Discovered", value=f"<t:{ts}:F> (<t:{ts}:R>)", inline=False)
+                    embed.set_footer(text="Ransomware Watch")
+                    await channel.send(embed=embed)
+                    cur.execute("UPDATE entries SET posted = 1 WHERE guid = ?", (guid,))
+                    conn.commit()
+                except Exception as exc:
+                    print(f"[_process_ransomware] send failed for {guid}: {exc}")
+            '''
+            
+    def _build_auto_embed(self, e: dict, feed: dict) -> discord.Embed:
+        '''
+        Builds a compact Discord embed for a single feed entry, made for auto posting (but disabled)
+        uses the feed's configured settings
+
+        Args:
+            e (dict): Parsed feed entry containing title, link, summary, published, and audio fields
+            feed (dict): The feed config entry from FEED_REGISTRY the entry belongs to
+
+        Returns:
+            discord.Embed: Formatted embed ready to send to a Discord channel
+        '''
+        
+        summary = clean_summary(e.get("summary", ""), max_length=300)
+        embed = discord.Embed(
+            title=e.get("title", "No title"),
+            url=e.get("link") or None,
+            description=summary,
+            color=feed["color"],
+        )
+        if e.get("published"):
+            ts = int(e["published"].timestamp())
+            embed.add_field(name="Published", value=f"<t:{ts}:F>", inline=True)
+
+        link_val = e.get("audio") or e.get("link", "")
+        if link_val:
+            label = "Listen" if feed["include_audio"] else "Read"
+            embed.add_field(name=label, value=link_val, inline=True)
+
+        embed.set_footer(text=feed["name"])
+        return embed
+    # ------------------ Background Loop End ------------------
     
+    # ------------------ Commands Start ------------------
+    # /news <category> — lists recent articles from all feeds in a category
+    @app_commands.command(name="news", description="Browse recent entries by category")
+    @app_commands.describe(
+        category="Categories: news, gov, research, podcast",
+        days="How many days back to look"
+    )
+    async def news(self, interaction: discord.Interaction, category: str, days: int = 0):
+        await interaction.response.defer()
+
+        matched_feeds = [f for f in FEED_REGISTRY if f["category"].lower() == category.lower()]
+        if not matched_feeds:
+            cats = ", ".join(CATEGORIES)
+            await interaction.followup.send(f"Unknown category `{category}`. Available: {cats}")
+            return
+
+        all_entries = []
+        for feed in matched_feeds:
+            try:
+                entries = parse_feed(feed["url"], include_audio=feed["include_audio"])
+                lookback = days if days > 0 else feed["days_recent"]
+                recent = filter_recent(entries, lookback)
+                for e in recent:
+                    e["_feed"] = feed   # tag so we know which feed it came from
+                all_entries.extend(recent)
+            except Exception as ex:
+                print(f"[/news] parse failed for {feed['name']}: {ex}")
+
+        if not all_entries:
+            await interaction.followup.send(f"No recent entries found for category `{category}`.")
+            return
+
+        all_entries.sort(key=lambda e: e["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+        # Use the category color from first matched feed
+        color = matched_feeds[0]["color"]
+        embed, view = make_paginated_view(all_entries, f"{category.title()} Feed — Recent", color)
+        await interaction.followup.send(embed=embed, view=view)
+
+    # /feedsearch <query> — searches across all feeds or optionally a specific source
+    @app_commands.command(name="feedsearch", description="Search across all feeds or a specific source")
+    @app_commands.describe(
+        query="Search term",
+        source="Optional: specific feed name"
+    )
+    async def feedsearch(self, interaction: discord.Interaction, query: str, source: str = ""):
+        await interaction.response.defer()
+
+        if source:
+            feed = FEED_BY_NAME.get(source.lower())
+            if not feed:
+                names = ", ".join(f["name"] for f in FEED_REGISTRY)
+                await interaction.followup.send(f"Unknown source `{source}`. Options:\n{names}")
+                return
+            feeds_to_search = [feed]
+        else:
+            feeds_to_search = FEED_REGISTRY
+
+        matches = []
+        for feed in feeds_to_search:
+            try:
+                entries = parse_feed(feed["url"], include_audio=feed["include_audio"])
+                for e in entries:
+                    if query.lower() in (e.get("title") or "").lower() or \
+                       query.lower() in (e.get("summary") or "").lower():
+                        e["_feed"] = feed
+                        matches.append(e)
+            except Exception as ex:
+                print(f"[/feedsearch] parse failed for {feed['name']}: {ex}")
+
+        if not matches:
+            await interaction.followup.send(f"No results found for `{query}`.")
+            return
+
+        color = matches[0]["_feed"]["color"] if len(feeds_to_search) == 1 else discord.Color.greyple()
+        title = f"Search: '{query}'" + (f" — {source}" if source else " — All Feeds")
+        embed, view = make_paginated_view(matches, title, color)
+        await interaction.followup.send(embed=embed, view=view)
+    # ------------------ Commands End ------------------
+    
+
 # Discord Setup
 async def setup(bot):
     await bot.add_cog(NewsCommands(bot), guild=discord.Object(id=GUILD_ID))

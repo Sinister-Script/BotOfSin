@@ -29,33 +29,6 @@ def clean_summary(summary: str, max_length: int = 1000) -> str:
         summary = summary[:max_length] + "..."
 
     return summary
-
-# Does not work properly 
-def clean_ctbb_summary(summary: str, max_length: int = 800) -> str:
-    '''
-    Specialized cleaner for CTBB to get rid of footer notes
-    
-    Args:
-        summary (str): Provided summary of the RSS source
-        max_length (Optional [int]): Maximum of length of summary to be used
-    
-    Returns:
-        str: Cleaned up summary with no tags and no footer
-    '''
-    
-    if not summary:
-        return "No summary available."
-    summary = unescape(summary)
-    summary = re.sub(r"<[^>]+>", "", summary)
-
-    # Remove everything after the "======" 
-    summary = re.split(r"={2,}.*", summary, maxsplit=1)[0]
-    summary = re.sub(r"\s*\n\s*", "\n", summary).strip()
-
-    if len(summary) > max_length:
-        summary = summary[:max_length] + "..."
-
-    return summary
 # ------------------ HTML Cleaners End------------------
 
 # ------------------ Feed Parsing ------------------
