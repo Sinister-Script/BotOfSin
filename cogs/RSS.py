@@ -59,6 +59,8 @@ FEED_REGISTRY = [
 
     # ---- CVE / Vulnerability ----
     {"name": "CISA KEV",                    "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json", "color": discord.Color.orange(), "category": "cve", "include_audio": False, "days_recent": 7},
+    
+    # Dead source
     {"name": "NVD Recent CVEs",             "url": "https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss-analyzed.xml",  "color": discord.Color.orange(),       "category": "cve",      "include_audio": False, "days_recent": 7},
     
     # ---- Podcast ----
@@ -316,9 +318,6 @@ class NewsCommands(commands.Cog):
             guid = (raw.get("id") or raw.get("guid") or e.get("link")) if raw else e.get("link")
             if not guid or already_seen(cur, guid):
                 continue
-
-            insert_entry(cur, name, e, guid)
-            conn.commit()
             
             # Entries predating bot startup are marked already-digested to prevent flood
             pre_startup = e.get("published") and e["published"] < self.bot_start_time
@@ -360,9 +359,6 @@ class NewsCommands(commands.Cog):
             if not guid or already_seen(cur, guid):
                 continue
 
-            insert_entry(cur, "Ransomware Watch", e, guid)
-            conn.commit()
-            
             # Entries predating bot startup are marked already-digested to prevent flood
             pre_startup = e.get("published") and e["published"] < self.bot_start_time
             insert_entry(cur, "Ransomware Watch", e, guid)
