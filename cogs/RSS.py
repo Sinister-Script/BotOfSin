@@ -325,17 +325,6 @@ class NewsCommands(commands.Cog):
             if pre_startup:
                 cur.execute("UPDATE entries SET digested = 1 WHERE guid = ?", (guid,))
             conn.commit()
-
-            '''
-            if channel:
-                try:
-                    embed = self._build_auto_embed(e, feed)
-                    await channel.send(embed=embed)
-                    cur.execute("UPDATE entries SET posted = 1 WHERE guid = ?", (guid,))
-                    conn.commit()
-                except Exception as exc:
-                    print(f"[_process_feed] send failed for {name} / {guid}: {exc}")
-            '''
             
     async def _process_ransomware(self, cur, conn):
         '''
@@ -365,25 +354,6 @@ class NewsCommands(commands.Cog):
             if pre_startup:
                 cur.execute("UPDATE entries SET digested = 1 WHERE guid = ?", (guid,))
             conn.commit()
-
-            '''
-            if channel:
-                try:
-                    embed = discord.Embed(
-                        title=e["title"],
-                        url=e["link"] or None,
-                        color=discord.Color.dark_orange(),
-                    )
-                    if e.get("published"):
-                        ts = int(e["published"].timestamp())
-                        embed.add_field(name="Discovered", value=f"<t:{ts}:F> (<t:{ts}:R>)", inline=False)
-                    embed.set_footer(text="Ransomware Watch")
-                    await channel.send(embed=embed)
-                    cur.execute("UPDATE entries SET posted = 1 WHERE guid = ?", (guid,))
-                    conn.commit()
-                except Exception as exc:
-                    print(f"[_process_ransomware] send failed for {guid}: {exc}")
-            '''
             
     def _build_auto_embed(self, e: dict, feed: dict) -> discord.Embed:
         '''
