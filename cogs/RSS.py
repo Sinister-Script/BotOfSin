@@ -87,11 +87,26 @@ def db_connect():
             summary   TEXT,
             published TEXT,
             audio     TEXT,
-            posted    INTEGER DEFAULT 0
+            posted    INTEGER DEFAULT 0,
+            digested  INTEGER DEFAULT 0
         )
     """)
     conn.commit()
+    migrate_db(conn)
     return conn
+
+def migrate_db(conn):
+    '''
+    Adds any columns that did not exist in older versions of the DB schema 
+
+    Args:
+        conn (sqlite3.Connection): Open connection to the feeds DB
+    '''
+    
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(entries)")}
+    if "digested" not in existing:
+        conn.execute("ALTER TABLE entries ADD COLUMN digested INTEGER DEFAULT 0")
+        conn.commit()
 
 def already_seen(cur, guid: str) -> bool:
     '''
@@ -189,13 +204,26 @@ class NewsCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._bg_task = None
+        self._digest_task = None
+        
+        # Entries published before this timestamp are inserted into the DB as seen
+        # but never included in digests, preventing the startup flood
+        self.bot_start_time = datetime.now(timezone.utc)
 
     async def cog_load(self):
         self._bg_task = asyncio.create_task(self.feed_loop())
+        self._digest_task = asyncio.create_task(self.digest_loop())
 
     async def cog_unload(self):
+        '''
+        Called automatically by discord.py when the cog is unloaded.
+        Cancels both background tasks to prevent them from running after teardown.
+        '''
+        
         if self._bg_task:
             self._bg_task.cancel()
+        if self._digest_task:
+            self._digest_task.cancel()
 
     # ------------------ Background Loop Start ------------------
     async def feed_loop(self):
@@ -291,6 +319,13 @@ class NewsCommands(commands.Cog):
 
             insert_entry(cur, name, e, guid)
             conn.commit()
+            
+            # Entries predating bot startup are marked already-digested to prevent flood
+            pre_startup = e.get("published") and e["published"] < self.bot_start_time
+            insert_entry(cur, name, e, guid)
+            if pre_startup:
+                cur.execute("UPDATE entries SET digested = 1 WHERE guid = ?", (guid,))
+            conn.commit()
 
             '''
             if channel:
@@ -326,6 +361,13 @@ class NewsCommands(commands.Cog):
                 continue
 
             insert_entry(cur, "Ransomware Watch", e, guid)
+            conn.commit()
+            
+            # Entries predating bot startup are marked already-digested to prevent flood
+            pre_startup = e.get("published") and e["published"] < self.bot_start_time
+            insert_entry(cur, "Ransomware Watch", e, guid)
+            if pre_startup:
+                cur.execute("UPDATE entries SET digested = 1 WHERE guid = ?", (guid,))
             conn.commit()
 
             '''
@@ -379,6 +421,153 @@ class NewsCommands(commands.Cog):
         embed.set_footer(text=feed["name"])
         return embed
     # ------------------ Background Loop End ------------------
+    
+    # ------------------ Daily Digest Start ------------------
+    # Changing DIGEST_HOUR and DIGEST_MINUTE (UTC) will control when the digest fires each day
+    DIGEST_HOUR   = 8  
+    DIGEST_MINUTE = 0   
+
+    async def digest_loop(self):
+        '''
+        Long-running background task that fires the daily digest once per day at the
+        configured UTC time, on startup it calculates how long
+        to sleep until the next scheduled fire time, so the first digest always fires
+        at the correct time regardless of when the bot started.
+        '''
+        
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            now = datetime.now(timezone.utc)
+            next_run = now.replace(hour=self.DIGEST_HOUR, minute=self.DIGEST_MINUTE, second=0, microsecond=0)
+
+            # If todays window has already passed, schedule for tomorrow
+            if next_run <= now:
+                next_run += timedelta(days=1)
+
+            sleep_seconds = (next_run - now).total_seconds()
+            print(f"[digest_loop] next digest in {sleep_seconds / 3600:.1f}h at {next_run.isoformat()}")
+            await asyncio.sleep(sleep_seconds)
+
+            try:
+                await self._post_daily_digest()
+            except Exception as e:
+                print(f"[digest_loop] unexpected error: {e}")
+
+    async def _post_daily_digest(self):
+        '''
+        Pulls all undigested entries from the DB, groups them by category (news, gov,
+        research, podcast, cve, ransomware), and posts one paginated embed per group
+        to the configured channel, marks every entry digested = 1 after posting.
+        Groups with no new entries are silently skipped
+        '''
+        
+        channel = await self._get_channel(CHANNEL_ID)
+        if not channel:
+            print("[_post_daily_digest] channel not found, skipping digest")
+            return
+
+        try:
+            conn = db_connect()
+            cur = conn.cursor()
+        except Exception as e:
+            print(f"[_post_daily_digest] DB connect error: {e}")
+            return
+
+        try:
+            cur.execute("""
+                SELECT feed_name, title, link, summary, published, audio
+                FROM entries
+                WHERE digested = 0
+                ORDER BY published ASC
+            """)
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            print("[_post_daily_digest] no undigested entries, skipping")
+            return
+
+        # Building the feed lookup 
+        feed_meta = {f["name"]: f for f in FEED_REGISTRY}
+
+        # Group entries into buckets - one per category in the normal feeds and one for ransomware
+        buckets: dict[str, list] = {}
+        for feed_name, title, link, summary, published_str, audio in rows:
+            published = None
+            if published_str:
+                try:
+                    published = dateparser.parse(published_str).astimezone(timezone.utc)
+                except Exception:
+                    pass
+
+            entry = {
+                "title":     title or "No title",
+                "link":      link or "",
+                "summary":   summary or "",
+                "published": published,
+                "audio":     audio,
+                "_feed_name": feed_name,
+            }
+
+            if feed_name == "Ransomware Watch":
+                bucket_key = "ransomware"
+            elif feed_name in feed_meta:
+                bucket_key = feed_meta[feed_name]["category"]
+            else:
+                bucket_key = "other"
+
+            buckets.setdefault(bucket_key, []).append(entry)
+
+        # Config for each bucket - display title and embed color
+        bucket_config = {
+            "news":       ("📰 Daily News Digest",         discord.Color.magenta()),
+            "gov":        ("🏛️ Government & CERT Digest",  discord.Color.red()),
+            "research":   ("🔬 Research Digest",           discord.Color.teal()),
+            "podcast":    ("🎙️ Podcast Digest",            discord.Color.brand_red()),
+            "cve":        ("⚠️ CVE / Vulnerability Digest", discord.Color.orange()),
+            "ransomware": ("☠️ Ransomware Activity Digest", discord.Color.dark_red()),
+        }
+
+        guids_to_mark = [row[0] for row in rows]  # feed_name not guid — fix is below
+        
+        # Re-fetch guids separately so they can be marked
+        try:
+            conn = db_connect()
+            cur = conn.cursor()
+            cur.execute("SELECT guid, feed_name FROM entries WHERE digested = 0")
+            guid_rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        for bucket_key, entries in buckets.items():
+            title_str, color = bucket_config.get(bucket_key, (f"{bucket_key.title()} Digest", discord.Color.blurple()))
+
+            # Sort newest first within the bucket
+            entries.sort(key=lambda e: e["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+            try:
+                embed, view = make_paginated_view(entries, title_str, color)
+                await channel.send(embed=embed, view=view)
+                print(f"[_post_daily_digest] posted {bucket_key} digest ({len(entries)} entries)")
+            except Exception as exc:
+                print(f"[_post_daily_digest] failed to post {bucket_key} digest: {exc}")
+
+        # Mark all fetched entries as digested
+        try:
+            conn = db_connect()
+            cur = conn.cursor()
+            cur.executemany(
+                "UPDATE entries SET digested = 1 WHERE guid = ?",
+                [(guid,) for guid, _ in guid_rows]
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"[_post_daily_digest] failed to mark entries as digested: {e}")
+        finally:
+            conn.close()
+    # ------------------ Daily Digest End ------------------
+    
     
     # ------------------ Commands Start ------------------
     # /news <category> — lists recent articles from all feeds in a category
