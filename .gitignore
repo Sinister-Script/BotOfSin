@@ -1,1 +1,9 @@
 config.json
+ctfs.db
+feeds.db
+OldRSS.py
+__pycache__/BotOfSin.cpython-312.pyc
+cogs/__pycache__/CTFFunctions.cpython-312.pyc
+cogs/__pycache__/FeedUtils.cpython-312.pyc
+cogs/__pycache__/RSS.cpython-312.pyc
+cogs/betterRSS.py
