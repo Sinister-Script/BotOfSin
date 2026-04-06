@@ -184,7 +184,7 @@ def make_paginated_view(entries, list_title: str, color: discord.Color, link_lab
     # Good ole paginator
     class Paginator(discord.ui.View):
         def __init__(self):
-            super().__init__(timeout=1000)
+            super().__init__(timeout=None)
             self.page = 0
 
         @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)

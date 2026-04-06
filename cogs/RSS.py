@@ -390,7 +390,7 @@ class NewsCommands(commands.Cog):
     
     # ------------------ Daily Digest Start ------------------
     # Changing DIGEST_HOUR and DIGEST_MINUTE (UTC) will control when the digest fires each day
-    DIGEST_HOUR   = 8  
+    DIGEST_HOUR   = 12  
     DIGEST_MINUTE = 0   
 
     async def digest_loop(self):
@@ -487,12 +487,12 @@ class NewsCommands(commands.Cog):
 
         # Config for each bucket - display title and embed color
         bucket_config = {
-            "news":       ("📰 Daily News Digest",         discord.Color.magenta()),
-            "gov":        ("🏛️ Government & CERT Digest",  discord.Color.red()),
-            "research":   ("🔬 Research Digest",           discord.Color.teal()),
-            "podcast":    ("🎙️ Podcast Digest",            discord.Color.brand_red()),
-            "cve":        ("⚠️ CVE / Vulnerability Digest", discord.Color.orange()),
-            "ransomware": ("☠️ Ransomware Activity Digest", discord.Color.dark_red()),
+            "news":       ("Daily News Digest",         discord.Color.magenta()),
+            "gov":        ("Government & CERT Digest",  discord.Color.red()),
+            "research":   ("Research Digest",           discord.Color.teal()),
+            "podcast":    ("Podcast Digest",            discord.Color.brand_red()),
+            "cve":        ("CVE / Vulnerability Digest", discord.Color.orange()),
+            "ransomware": ("Ransomware Activity Digest", discord.Color.dark_red()),
         }
 
         guids_to_mark = [row[0] for row in rows]  # feed_name not guid — fix is below
